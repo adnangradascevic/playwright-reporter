@@ -1,16 +1,16 @@
 {
   "name": "@sentinelqa/playwright-reporter",
-  "version": "0.1.20",
+  "version": "0.1.19",
   "private": false,
   "description": "Playwright reporter for CI debugging with optional Sentinel cloud dashboards",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sentinelqa/playwright-reporter.git"
+    "url": "https://github.com/adnangradascevic/playwright-reporter.git"
   },
-  "homepage": "https://github.com/sentinelqa/playwright-reporter#readme",
+  "homepage": "https://github.com/adnangradascevic/playwright-reporter#readme",
   "bugs": {
-    "url": "https://github.com/sentinelqa/playwright-reporter/issues"
+    "url": "https://github.com/adnangradascevic/playwright-reporter/issues"
   },
   "keywords": [
     "sentinelqa",

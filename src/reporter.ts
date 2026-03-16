@@ -105,8 +105,8 @@ class SentinelReporter {
     console.log(
       `  ${cyan(
         formatTerminalLink(
-          "https://github.com/sentinelqa/playwright-reporter",
-          "https://github.com/sentinelqa/playwright-reporter"
+          "https://github.com/adnangradascevic/playwright-reporter",
+          "https://github.com/adnangradascevic/playwright-reporter"
         )
       )}`
     );
