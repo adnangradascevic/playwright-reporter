@@ -1,8 +1,8 @@
-# Sentinel Playwright Reporter
+# Playwright Reporter
 
-![npm](https://img.shields.io/npm/v/@sentinelqa/playwright-reporter)
-![downloads](https://img.shields.io/npm/dm/@sentinelqa/playwright-reporter)
-![license](https://img.shields.io/npm/l/@sentinelqa/playwright-reporter)
+[![npm](https://img.shields.io/npm/v/@sentinelqa/playwright-reporter)](https://www.npmjs.com/package/@sentinelqa/playwright-reporter)
+[![downloads](https://img.shields.io/npm/dm/@sentinelqa/playwright-reporter)](https://www.npmjs.com/package/@sentinelqa/playwright-reporter)
+[![license](https://img.shields.io/npm/l/@sentinelqa/playwright-reporter)](./LICENSE)
 
 A Playwright reporter that aggregates traces, screenshots, videos, and logs
 into a single debugging report for failed tests.
@@ -26,7 +26,7 @@ Optionally upload runs to Sentinel Cloud for CI history and AI failure analysis.
 Debugging Playwright CI failures often means downloading traces,
 screenshots, and videos separately.
 
-Sentinel Reporter aggregates everything into one debugging report
+Reporter aggregates everything into one debugging report
 so you can quickly understand what failed.
 
 ## Requirements
