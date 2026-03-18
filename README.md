@@ -12,11 +12,18 @@ Works locally out of the box with no account required.
 Optionally upload runs to Sentinel Cloud for CI history and AI failure analysis.
 
 ![Sentinel Report Example](./docs/screenshot.png)
+![Run-to-Run Diff](./docs/run_diff.png)
+![CLI Quick Diagnosis](./docs/CLI.png)
 
 ## Features
 
 - Aggregates Playwright traces, screenshots, videos, and logs
 - Generates a local HTML debugging report
+- Prints a deterministic quick diagnosis in the terminal after failed runs
+- Adds a failure digest to the local HTML report
+- Groups similar failures so repeated symptoms are easy to spot
+- Lets you copy debug summaries for Slack, Jira, and GitHub issues
+- Compares the current run to the previous run on the same branch
 - Works with existing Playwright reporter setup
 - Optional Sentinel Cloud integration
 - CI run history and AI debugging summaries in cloud mode
@@ -87,6 +94,9 @@ If tests fail and `SENTINEL_TOKEN` is not set, Sentinel generates:
 
 Open the report to inspect:
 
+- failure digest
+- similar failure groups
+- run-to-run diff
 - failed tests
 - screenshots
 - videos

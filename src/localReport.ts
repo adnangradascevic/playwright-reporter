@@ -1,6 +1,15 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { execSync } from "child_process";
+import {
+  buildDebugSummary,
+  buildSimilarityKey,
+  describeFailure,
+  parseFailureFacts,
+  summarizeSignal,
+  type FailureFacts
+} from "./quickDiagnosis";
 
 type ReporterSourcePaths = {
   playwrightJsonPath: string;
@@ -35,6 +44,7 @@ type CopiedArtifact = {
 
 type ReportTest = {
   id: string;
+  matchKey: string;
   title: string;
   titlePath: string[];
   file: string | null;
@@ -42,6 +52,7 @@ type ReportTest = {
   status: string;
   duration: number;
   errors: string[];
+  diagnosis: FailureFacts | null;
   artifacts: CopiedArtifact[];
 };
 
@@ -62,12 +73,52 @@ type LocalReportResult = {
   redirectPath: string;
   artifactCount: number;
   summary: LocalReportSummary;
+  runDiff: RunDiffSummary | null;
+};
+
+type SimilarFailureGroup = {
+  key: string;
+  signal: string;
+  summary: string;
+  locator: string | null;
+  tests: ReportTest[];
+};
+
+type FailureDigestGroup = {
+  key: string;
+  summary: string;
+  tests: ReportTest[];
+};
+
+type RunSnapshot = {
+  generatedAt: string;
+  branch: string;
+  gitSha: string;
+  totals: LocalReportSummary;
+  tests: Array<{
+    id: string;
+    matchKey: string;
+    title: string;
+    status: string;
+    signal: string | null;
+    locator: string | null;
+    expected: string | null;
+    received: string | null;
+  }>;
+};
+
+type RunDiffSummary = {
+  label: string;
+  newFailures: ReportTest[];
+  fixedTests: RunSnapshot["tests"];
+  stillFailing: ReportTest[];
 };
 
 const DEFAULT_REPORT_DIR = "sentinel-report";
 const DEFAULT_REPORT_FILE = "index.html";
 const DEFAULT_REDIRECT_FILE = "sentinel-debug.html";
 const SENTINEL_URL = "https://sentinelqa.com";
+const SENTINEL_HISTORY_DIR = path.join(".sentinel", "history");
 
 const ARTIFACT_EXTENSIONS: Record<ArtifactKind, string[]> = {
   trace: [".zip"],
@@ -161,10 +212,64 @@ const safeSlug = (value: string) => {
   );
 };
 
+const buildTitlePath = (baseTitles: string[], test: any) => {
+  const title = typeof test?.title === "string" ? test.title : null;
+  if (!title) return baseTitles.filter(Boolean);
+  if (baseTitles[baseTitles.length - 1] === title) return baseTitles.filter(Boolean);
+  return [...baseTitles, title].filter(Boolean);
+};
+
+const buildTestIdentity = (test: any, titlePath: string[]) => {
+  const file = test?.location?.file || "unknown";
+  const project = test?.projectName || "default";
+  const joined = titlePath.join(" > ");
+  return {
+    id: [file, project, joined].join("::"),
+    matchKey: [file, joined].join("::")
+  };
+};
+
 const formatDuration = (durationMs: number) => {
   if (!Number.isFinite(durationMs) || durationMs <= 0) return "0 ms";
   if (durationMs < 1000) return `${Math.round(durationMs)} ms`;
   return `${(durationMs / 1000).toFixed(durationMs >= 10_000 ? 0 : 1)} s`;
+};
+
+const pluralize = (count: number, singular: string, plural: string) =>
+  count === 1 ? singular : plural;
+
+const sanitizeFileSegment = (value: string) =>
+  value.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "unknown";
+
+const getCurrentBranch = () => {
+  const envBranch =
+    process.env.GITHUB_HEAD_REF ||
+    process.env.GITHUB_REF_NAME ||
+    process.env.VERCEL_GIT_COMMIT_REF ||
+    process.env.CI_COMMIT_REF_NAME ||
+    process.env.BRANCH_NAME;
+  if (envBranch) return sanitizeFileSegment(envBranch);
+  try {
+    return sanitizeFileSegment(execSync("git rev-parse --abbrev-ref HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString("utf8").trim());
+  } catch {
+    return "unknown";
+  }
+};
+
+const getCurrentGitSha = () => {
+  const envSha =
+    process.env.GITHUB_SHA ||
+    process.env.VERCEL_GIT_COMMIT_SHA ||
+    process.env.CI_COMMIT_SHA ||
+    process.env.COMMIT_SHA;
+  if (envSha) return envSha.slice(0, 12);
+  try {
+    return execSync("git rev-parse --short=12 HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString("utf8")
+      .trim();
+  } catch {
+    return "unknown";
+  }
 };
 
 const relativeFromCwd = (targetPath: string) => {
@@ -291,21 +396,29 @@ const createReportTest = (test: any, titlePath: string[]) => {
     (total: number, result: any) => total + (Number(result?.duration) || 0),
     0
   );
-  const id = [
-    test?.location?.file || "unknown",
-    test?.projectName || "default",
-    titlePath.join(" > ")
-  ].join("::");
+  const identity = buildTestIdentity(test, titlePath);
+  const status = normalizeTestStatus(test?.status || lastResult?.status || "unknown");
+  const primaryError = errors[0] || "";
 
   return {
-    id,
+    id: identity.id,
+    matchKey: identity.matchKey,
     title: test?.title || titlePath[titlePath.length - 1] || "Untitled test",
     titlePath,
     file: test?.location?.file || null,
     projectName: test?.projectName || null,
-    status: normalizeTestStatus(test?.status || lastResult?.status || "unknown"),
+    status,
     duration,
     errors,
+    diagnosis:
+      ["failed", "timedOut", "interrupted"].includes(status) && primaryError
+        ? parseFailureFacts(
+            test?.title || titlePath[titlePath.length - 1] || "Untitled test",
+            titlePath,
+            primaryError,
+            status
+          )
+        : null,
     artifacts: []
   } satisfies ReportTest;
 };
@@ -316,7 +429,7 @@ const collectTests = (node: any, parentTitles: string[] = []): ReportTest[] => {
 
   if (Array.isArray(node?.tests)) {
     for (const test of node.tests) {
-      collected.push(createReportTest(test, [...nextTitles, test?.title].filter(Boolean)));
+      collected.push(createReportTest(test, buildTitlePath(nextTitles, test)));
     }
   }
 
@@ -325,7 +438,7 @@ const collectTests = (node: any, parentTitles: string[] = []): ReportTest[] => {
       const specTitles = [...nextTitles, spec?.title].filter(Boolean);
       const specTests = Array.isArray(spec?.tests) ? spec.tests : [];
       for (const test of specTests) {
-        collected.push(createReportTest(test, specTitles));
+        collected.push(createReportTest(test, buildTitlePath(specTitles, test)));
       }
     }
   }
@@ -345,12 +458,8 @@ const collectTestRefs = (node: any, parentTitles: string[] = []): ParsedTestRef[
 
   if (Array.isArray(node?.tests)) {
     for (const test of node.tests) {
-      const titlePath = [...nextTitles, test?.title].filter(Boolean);
-      const id = [
-        test?.location?.file || "unknown",
-        test?.projectName || "default",
-        titlePath.join(" > ")
-      ].join("::");
+      const titlePath = buildTitlePath(nextTitles, test);
+      const id = buildTestIdentity(test, titlePath).id;
       refs.push({ id, resultList: Array.isArray(test?.results) ? test.results : [] });
     }
   }
@@ -359,11 +468,7 @@ const collectTestRefs = (node: any, parentTitles: string[] = []): ParsedTestRef[
     for (const spec of node.specs) {
       const titlePath = [...nextTitles, spec?.title].filter(Boolean);
       for (const test of Array.isArray(spec?.tests) ? spec.tests : []) {
-        const id = [
-          test?.location?.file || "unknown",
-          test?.projectName || "default",
-          titlePath.join(" > ")
-        ].join("::");
+        const id = buildTestIdentity(test, buildTitlePath(titlePath, test)).id;
         refs.push({ id, resultList: Array.isArray(test?.results) ? test.results : [] });
       }
     }
@@ -391,6 +496,133 @@ const summarizeTests = (tests: ReportTest[]): LocalReportSummary => {
     },
     { total: 0, failed: 0, passed: 0, skipped: 0 }
   );
+};
+
+const getFailureTests = (tests: ReportTest[]) =>
+  tests.filter((test) => ["failed", "timedOut", "interrupted"].includes(test.status));
+
+const groupSimilarFailures = (tests: ReportTest[]): SimilarFailureGroup[] => {
+  const groups = new Map<string, SimilarFailureGroup>();
+  for (const test of getFailureTests(tests)) {
+    const diagnosis = test.diagnosis;
+    const key = diagnosis ? buildSimilarityKey(diagnosis) : `unknown|${test.title}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        signal: diagnosis ? summarizeSignal(diagnosis.signal) : "uncategorized failure",
+        summary: diagnosis ? describeFailure(diagnosis) : "The failure could not be grouped from captured evidence.",
+        locator: diagnosis?.locator || null,
+        tests: []
+      });
+    }
+    groups.get(key)!.tests.push(test);
+  }
+  return Array.from(groups.values())
+    .filter((group) => group.tests.length > 1)
+    .sort((a, b) => b.tests.length - a.tests.length);
+};
+
+const groupFailureDigest = (tests: ReportTest[]): FailureDigestGroup[] => {
+  const groups = new Map<string, FailureDigestGroup>();
+  for (const test of getFailureTests(tests)) {
+    const summary = test.diagnosis
+      ? describeFailure(test.diagnosis)
+      : (test.errors[0]?.split(/\r?\n/)[0]?.trim() || "Open the failure details to inspect the exact Playwright error.");
+    const key = summary;
+    if (!groups.has(key)) {
+      groups.set(key, { key, summary, tests: [] });
+    }
+    groups.get(key)!.tests.push(test);
+  }
+  return Array.from(groups.values()).sort((a, b) => b.tests.length - a.tests.length);
+};
+
+const buildRunSnapshot = (tests: ReportTest[], summary: LocalReportSummary): RunSnapshot => ({
+  generatedAt: new Date().toISOString(),
+  branch: getCurrentBranch(),
+  gitSha: getCurrentGitSha(),
+  totals: summary,
+  tests: tests.map((test) => ({
+    id: test.id,
+    matchKey: test.matchKey,
+    title: test.titlePath.join(" > ") || test.title,
+    status: test.status,
+    signal: test.diagnosis?.signal || null,
+    locator: test.diagnosis?.locator || null,
+    expected: test.diagnosis?.expected || null,
+    received: test.diagnosis?.received || null
+  }))
+});
+
+const getPointerPaths = (branch: string) => [
+  path.join(".sentinel", "latest.json"),
+  path.join(".sentinel", `latest-${branch}.json`),
+  ...(branch === "main" ? [path.join(".sentinel", "latest-main.json")] : [])
+];
+
+const readSnapshot = (filePath: string) => {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as RunSnapshot;
+  } catch {
+    return null;
+  }
+};
+
+const writeRunHistory = (snapshot: RunSnapshot) => {
+  ensureDir(path.resolve(process.cwd(), SENTINEL_HISTORY_DIR));
+  ensureDir(path.resolve(process.cwd(), ".sentinel"));
+  const fileName = `${snapshot.generatedAt.replace(/[:.]/g, "-")}-${snapshot.gitSha}.json`;
+  const historyPath = path.resolve(process.cwd(), SENTINEL_HISTORY_DIR, fileName);
+  fs.writeFileSync(historyPath, JSON.stringify(snapshot, null, 2), "utf8");
+  for (const pointerPath of getPointerPaths(snapshot.branch)) {
+    fs.writeFileSync(
+      path.resolve(process.cwd(), pointerPath),
+      JSON.stringify(
+        {
+          path: relativeFromCwd(historyPath),
+          ...snapshot
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+  }
+  return historyPath;
+};
+
+const buildRunDiff = (tests: ReportTest[], snapshot: RunSnapshot): RunDiffSummary | null => {
+  const previous = readSnapshot(path.resolve(process.cwd(), ".sentinel", `latest-${snapshot.branch}.json`))
+    || readSnapshot(path.resolve(process.cwd(), ".sentinel", "latest.json"));
+  if (!previous || previous.generatedAt === snapshot.generatedAt) return null;
+
+  const currentById = new Map(tests.map((test) => [test.id, test]));
+  const currentByMatchKey = new Map(tests.map((test) => [test.matchKey, test]));
+  const currentFailures = getFailureTests(tests);
+  const previousFailures = previous.tests.filter((test) =>
+    ["failed", "timedOut", "interrupted"].includes(test.status)
+  );
+  const previousFailureIds = new Set(previousFailures.map((test) => test.id));
+  const previousFailureMatchKeys = new Set(
+    previousFailures.map((test) => (typeof test.matchKey === "string" ? test.matchKey : test.id))
+  );
+
+  return {
+    label: previous.branch === snapshot.branch ? `Compared to previous ${snapshot.branch} run` : "Compared to previous run",
+    newFailures: currentFailures.filter(
+      (test) => !previousFailureIds.has(test.id) && !previousFailureMatchKeys.has(test.matchKey)
+    ),
+    fixedTests: previousFailures.filter((test) => {
+      const current =
+        currentById.get(test.id) ||
+        currentByMatchKey.get(typeof test.matchKey === "string" ? test.matchKey : test.id);
+      return current && !["failed", "timedOut", "interrupted"].includes(current.status);
+    }),
+    stillFailing: currentFailures.filter(
+      (test) => previousFailureIds.has(test.id) || previousFailureMatchKeys.has(test.matchKey)
+    )
+  };
 };
 
 const renderArtifact = (artifact: CopiedArtifact) => {
@@ -521,6 +753,31 @@ const renderTestCard = (test: ReportTest) => {
         })()
       : `<pre>No error message was attached to this result.</pre>`;
   const artifactMarkup = renderArtifactGroups(test.artifacts);
+  const diagnosis = test.diagnosis;
+  const diagnosisMarkup = diagnosis
+    ? `
+        <div class="diagnosis-shell">
+          <div>
+            <span class="artifact-kind">Quick diagnosis</span>
+            <p class="diagnosis-copy">${escapeHtml(describeFailure(diagnosis))}</p>
+          </div>
+          <button
+            type="button"
+            class="copy-button"
+            data-copy-summary="${escapeHtml(buildDebugSummary(diagnosis))}"
+            aria-label="Copy debug summary"
+          >
+            Copy debug summary
+          </button>
+        </div>
+        <div class="fact-row">
+          ${diagnosis.locator ? `<span class="fact-chip">Locator: ${escapeHtml(diagnosis.locator)}</span>` : ""}
+          ${diagnosis.expected ? `<span class="fact-chip">Expected: ${escapeHtml(diagnosis.expected)}</span>` : ""}
+          ${diagnosis.received ? `<span class="fact-chip">Observed: ${escapeHtml(diagnosis.received)}</span>` : ""}
+          ${diagnosis.timeoutMs ? `<span class="fact-chip">Timeout: ${diagnosis.timeoutMs}ms</span>` : ""}
+        </div>
+      `
+    : "";
 
   return `
     <details class="test-card">
@@ -536,6 +793,7 @@ const renderTestCard = (test: ReportTest) => {
         </div>
       </summary>
       <div class="panel">
+        ${diagnosisMarkup}
         <h4>Error</h4>
         ${errorBlock}
       </div>
@@ -546,6 +804,161 @@ const renderTestCard = (test: ReportTest) => {
         </div>
       </div>
     </details>
+  `;
+};
+
+const renderFailureDigest = (tests: ReportTest[]) => {
+  const failedTests = getFailureTests(tests);
+  if (!failedTests.length) {
+    return `<div class="empty-state">No failed tests were detected in this run.</div>`;
+  }
+  const digestGroups = groupFailureDigest(tests);
+
+  return `
+    <div class="digest-grid">
+      ${digestGroups
+        .map((group) => {
+          const primary = group.tests[0];
+          const diagnosis = primary.diagnosis;
+          const debugSummary = escapeHtml(
+            group.tests.length > 1
+              ? [
+                  `Grouped failure summary: ${group.summary}`,
+                  ...group.tests.map((test) => `- ${test.title}`)
+                ].join("\n")
+              : diagnosis
+                ? buildDebugSummary(diagnosis)
+                : `Test: ${primary.title}\nDiagnosis: Review trace and error details in the expanded card.`
+          );
+          const uniqueLocators = Array.from(
+            new Set(group.tests.map((test) => test.diagnosis?.locator).filter(Boolean))
+          );
+          return `
+            <article class="digest-card">
+              <div class="digest-head">
+                <div>
+                  <span class="artifact-kind">${escapeHtml(primary.status)}</span>
+                  <h3>${
+                    group.tests.length > 1
+                      ? `${group.tests.length} tests share this failure`
+                      : escapeHtml(primary.title)
+                  }</h3>
+                </div>
+                <button
+                  type="button"
+                  class="copy-button"
+                  data-copy-summary="${debugSummary}"
+                  aria-label="Copy debug summary"
+                >
+                  Copy summary
+                </button>
+              </div>
+              <p>${escapeHtml(group.summary)}</p>
+              <div class="fact-row">
+                ${
+                  diagnosis?.expected && diagnosis?.received
+                    ? `<span class="fact-chip">Expected: ${escapeHtml(diagnosis.expected)}</span><span class="fact-chip">Observed: ${escapeHtml(diagnosis.received)}</span>`
+                    : ""
+                }
+                ${
+                  uniqueLocators.length === 1
+                    ? `<span class="fact-chip">Locator: ${escapeHtml(uniqueLocators[0]!)}</span>`
+                    : uniqueLocators.length > 1
+                      ? `<span class="fact-chip">${uniqueLocators.length} locators involved</span>`
+                      : ""
+                }
+              </div>
+              ${
+                group.tests.length > 1
+                  ? `<ul class="group-list">${group.tests.map((test) => `<li>${escapeHtml(test.title)}</li>`).join("\n")}</ul>`
+                  : ""
+              }
+            </article>
+          `;
+        })
+        .join("\n")}
+    </div>
+  `;
+};
+
+const renderSimilarFailureGroups = (groups: SimilarFailureGroup[]) => {
+  if (!groups.length) {
+    return `<div class="empty-state">No repeated failure fingerprint was detected in this run.</div>`;
+  }
+  return groups
+    .map(
+      (group) => `
+        <article class="group-card">
+          <div class="failed-list-head">
+            <div>
+              <h3>${escapeHtml(group.signal)}</h3>
+              <p>${escapeHtml(group.summary)}</p>
+            </div>
+            <div class="group-count">${group.tests.length} ${pluralize(group.tests.length, "test", "tests")}</div>
+          </div>
+          ${
+            group.locator
+              ? `<div class="fact-row"><span class="fact-chip">Common locator: ${escapeHtml(group.locator)}</span></div>`
+              : ""
+          }
+          <ul class="group-list">
+            ${group.tests
+              .slice(0, 6)
+              .map((test) => `<li>${escapeHtml(test.title)}</li>`)
+              .join("\n")}
+          </ul>
+        </article>
+      `
+    )
+    .join("\n");
+};
+
+const renderRunDiff = (runDiff: RunDiffSummary | null) => {
+  if (!runDiff) {
+    return `<div class="empty-state">No previous run snapshot was available for comparison.</div>`;
+  }
+  return `
+    <div class="diff-label">${escapeHtml(runDiff.label)}</div>
+    <div class="summary-grid">
+      <div class="summary-card">
+        <span class="summary-label">New failures</span>
+        <span class="summary-value">${runDiff.newFailures.length}</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">Fixed since last run</span>
+        <span class="summary-value">${runDiff.fixedTests.length}</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">Still failing</span>
+        <span class="summary-value">${runDiff.stillFailing.length}</span>
+      </div>
+    </div>
+    <div class="diff-grid">
+      <article class="diff-card">
+        <h3>New failures</h3>
+        ${
+          runDiff.newFailures.length
+            ? `<ul class="group-list">${runDiff.newFailures.map((test) => `<li>${escapeHtml(test.title)}</li>`).join("\n")}</ul>`
+            : `<div class="empty-state">No new failures in this run.</div>`
+        }
+      </article>
+      <article class="diff-card">
+        <h3>Fixed since last run</h3>
+        ${
+          runDiff.fixedTests.length
+            ? `<ul class="group-list">${runDiff.fixedTests.map((test) => `<li>${escapeHtml(test.title)}</li>`).join("\n")}</ul>`
+            : `<div class="empty-state">No previously failing tests were fixed in this run.</div>`
+        }
+      </article>
+      <article class="diff-card">
+        <h3>Still failing</h3>
+        ${
+          runDiff.stillFailing.length
+            ? `<ul class="group-list">${runDiff.stillFailing.map((test) => `<li>${escapeHtml(test.title)}</li>`).join("\n")}</ul>`
+            : `<div class="empty-state">No tests remained failing across both runs.</div>`
+        }
+      </article>
+    </div>
   `;
 };
 
@@ -593,11 +1006,13 @@ const tryMapRemainingArtifactsToTests = (
 const buildHtml = (
   tests: ReportTest[],
   summary: LocalReportSummary,
-  extraArtifacts: CopiedArtifact[]
+  extraArtifacts: CopiedArtifact[],
+  runDiff: RunDiffSummary | null
 ) => {
   const failedTests = tests.filter((test) =>
     ["failed", "timedOut", "interrupted"].includes(test.status)
   );
+  const similarGroups = groupSimilarFailures(tests);
   const generatedAt = new Date().toLocaleString();
 
   return `<!doctype html>
@@ -911,6 +1326,60 @@ const buildHtml = (
       .section-shell li {
         margin-top: 6px;
       }
+      .digest-grid, .diff-grid {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        margin-top: 18px;
+      }
+      .digest-card, .group-card, .diff-card {
+        border: 1px solid rgba(125, 211, 252, 0.16);
+        border-radius: 16px;
+        background: rgba(9, 13, 20, 0.72);
+        padding: 16px;
+      }
+      .digest-head, .diagnosis-shell {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+      }
+      .digest-card p,
+      .group-card p,
+      .diff-card p,
+      .diagnosis-copy {
+        margin: 10px 0 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .fact-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .fact-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(125, 211, 252, 0.2);
+        background: rgba(125, 211, 252, 0.06);
+        color: #cdefff;
+        font-size: 12px;
+      }
+      .group-count, .diff-label {
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .group-list {
+        margin: 14px 0 0 18px;
+        color: var(--text);
+      }
+      .group-list li {
+        margin-top: 8px;
+      }
       .empty-state {
         color: var(--muted);
         border: 1px dashed rgba(39, 48, 66, 0.9);
@@ -1017,6 +1486,32 @@ const buildHtml = (
 
       <section class="section-shell">
         <div class="failed-list-head">
+          <h2>Run-to-Run Diff</h2>
+        </div>
+        <p>Compare this run with the latest saved snapshot from the same branch.</p>
+        ${renderRunDiff(runDiff)}
+      </section>
+
+      <section class="section-shell">
+        <div class="failed-list-head">
+          <h2>Failure Digest</h2>
+          <div class="failed-count">${failedTests.length} failed</div>
+        </div>
+        <p>Deterministic summaries built from the Playwright error, locator, assertion text, and timeout.</p>
+        ${renderFailureDigest(tests)}
+      </section>
+
+      <section class="section-shell">
+        <div class="failed-list-head">
+          <h2>Similar Failures</h2>
+          <div class="failed-count">${similarGroups.length} groups</div>
+        </div>
+        <p>Failures are grouped only when they share the same fingerprint, so one repeated issue is easier to spot.</p>
+        ${renderSimilarFailureGroups(similarGroups)}
+      </section>
+
+      <section class="section-shell">
+        <div class="failed-list-head">
           <h2>Failed Tests</h2>
           <div class="failed-count">${failedTests.length} failed</div>
         </div>
@@ -1107,6 +1602,32 @@ const buildHtml = (
               button.textContent = "Copy failed";
               setTimeout(function () {
                 button.textContent = "Copy";
+              }, 1200);
+            }
+          });
+        });
+
+        document.querySelectorAll("[data-copy-summary]").forEach(function (button) {
+          button.addEventListener("click", async function () {
+            var rawSummary = button.getAttribute("data-copy-summary");
+            if (!rawSummary) return;
+            var text = rawSummary
+              .replace(/&quot;/g, '"')
+              .replace(/&#39;/g, "'")
+              .replace(/&lt;/g, "<")
+              .replace(/&gt;/g, ">")
+              .replace(/&amp;/g, "&");
+            try {
+              await navigator.clipboard.writeText(text);
+              var previousText = button.textContent;
+              button.textContent = "Copied";
+              setTimeout(function () {
+                button.textContent = previousText || "Copy summary";
+              }, 1200);
+            } catch (_error) {
+              button.textContent = "Copy failed";
+              setTimeout(function () {
+                button.textContent = previousText || "Copy summary";
               }, 1200);
             }
           });
@@ -1241,7 +1762,10 @@ export function generateLocalDebugReport(
   }
 
   const summary = summarizeTests(tests);
-  const html = buildHtml(tests, summary, extraArtifacts);
+  const snapshot = buildRunSnapshot(tests, summary);
+  const runDiff = buildRunDiff(tests, snapshot);
+  writeRunHistory(snapshot);
+  const html = buildHtml(tests, summary, extraArtifacts, runDiff);
   fs.writeFileSync(reportHtmlPath, html, "utf8");
   fs.writeFileSync(
     redirectPath,
@@ -1257,6 +1781,7 @@ export function generateLocalDebugReport(
     htmlPath: reportHtmlPath,
     redirectPath,
     artifactCount: claimedSourcePaths.size,
-    summary
+    summary,
+    runDiff
   };
 }

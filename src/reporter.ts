@@ -79,7 +79,8 @@ class SentinelReporter {
     }
   }
 
-  private printLocalReport(localReportPath: string) {
+  private printLocalReport(localReport: ReturnType<typeof generateLocalDebugReport>) {
+    const localReportPath = localReport.htmlPath;
     const relativeReportPath = path
       .relative(process.cwd(), localReportPath)
       .replace(/\\/g, "/");
@@ -104,6 +105,13 @@ class SentinelReporter {
       for (const line of quickDiagnosis.lines) {
         console.log(`  ${dim(line)}`);
       }
+      console.log("");
+    }
+    if (localReport.runDiff) {
+      console.log(yellow("Run-to-run diff"));
+      console.log(`  ${dim(`New failures: ${localReport.runDiff.newFailures.length}`)}`);
+      console.log(`  ${dim(`Fixed since last run: ${localReport.runDiff.fixedTests.length}`)}`);
+      console.log(`  ${dim(`Still failing: ${localReport.runDiff.stillFailing.length}`)}`);
       console.log("");
     }
     console.log(yellow("Tip"));
@@ -142,7 +150,7 @@ class SentinelReporter {
         redirectFileName: this.options.localRedirectFileName
       });
 
-      this.printLocalReport(localReport.htmlPath);
+      this.printLocalReport(localReport);
       console.log("");
 
       if (hasSentinelToken && !hasCiEnv && !localUploadEnabled) {
