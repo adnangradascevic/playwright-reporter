@@ -229,3 +229,5 @@ export function resolveSentinelPaths(
     artifactDirs
   };
 }
+
+export { attachSentinelFailureCapture } from "./fixtures";

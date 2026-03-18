@@ -36,6 +36,14 @@ so you can quickly understand what failed.
 
 ## Quick Start
 
+`withSentinel()` is the default setup for everyone:
+
+- best for free and local users
+- zero-friction setup
+- local HTML report works exactly as today
+- cloud upload works when configured
+- AI summaries use trace and reporter evidence, but are less precise than live page capture
+
 Install:
 
 ```bash
@@ -93,13 +101,24 @@ If `SENTINEL_TOKEN` is not set, the reporter generates a local HTML debugging re
 
 ### Cloud mode
 
-If `SENTINEL_TOKEN` is set, the reporter uploads the run to Sentinel instead of generating the local HTML report.
+If `SENTINEL_TOKEN` is set in CI, the reporter uploads the run to Sentinel instead of generating the local HTML report.
 
 ```bash
 SENTINEL_TOKEN=your_project_ingest_token npx playwright test
 ```
 
 For intentional uploads outside CI, also set `SENTINEL_UPLOAD_LOCAL=1` and provide the usual commit and run metadata expected by the uploader.
+
+Example:
+
+```bash
+SENTINEL_TOKEN=your_project_ingest_token \
+SENTINEL_UPLOAD_LOCAL=1 \
+GITHUB_SHA=abc123 \
+GITHUB_REF_NAME=main \
+GITHUB_RUN_ID=local-dev \
+npx playwright test
+```
 
 ## What `withSentinel()` does
 
@@ -110,6 +129,43 @@ For intentional uploads outside CI, also set `SENTINEL_UPLOAD_LOCAL=1` and provi
   - trace: `retain-on-failure`
   - screenshot: `only-on-failure`
   - video: `retain-on-failure`
+
+## Recommended Cloud Setup
+
+If you use Sentinel Cloud and want the best AI summaries and fix suggestions, keep `withSentinel()` in your Playwright config and add the live capture fixture.
+
+Why:
+
+- `withSentinel()` alone works from reporter and trace data
+- a Playwright reporter does not get the live `page` fixture
+- the live capture fixture lets Sentinel collect richer DOM and code context at the exact failure moment
+- this is required for the highest-quality DOM-aware patches
+
+Create one shared test wrapper:
+
+```ts
+// tests/test.ts
+import { test as base, expect } from "@playwright/test";
+import { attachSentinelFailureCapture } from "@sentinelqa/playwright-reporter/fixtures";
+
+export const test = attachSentinelFailureCapture(base);
+export { expect };
+```
+
+Then import from that file in your specs instead of `@playwright/test`:
+
+```ts
+import { test, expect } from "./test";
+```
+
+Use this cloud setup when you want:
+
+- best AI summaries
+- best fix suggestions
+- richer DOM-aware diagnosis
+- more reliable code patches grounded in real page state
+
+Free and local-only users do not need this. The standard `withSentinel()` setup remains the simplest path and continues to generate the local report the same way as before.
 
 ## Options
 

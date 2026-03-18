@@ -1066,13 +1066,11 @@ const buildHtml = (
           var tracePath = button.getAttribute("data-trace-path");
           if (!tracePath) return;
           try {
-            if (window.location.protocol === "http:" || window.location.protocol === "https:") {
-              var traceUrl = new URL(tracePath, window.location.href).href;
-              button.setAttribute(
-                "href",
-                "https://trace.playwright.dev/?trace=" + encodeURIComponent(traceUrl)
-              );
-            }
+            var traceUrl = new URL(tracePath, window.location.href).href;
+            button.setAttribute(
+              "href",
+              "https://trace.playwright.dev/?trace=" + encodeURIComponent(traceUrl)
+            );
           } catch (_error) {
             // Keep the raw trace file link as fallback.
           }

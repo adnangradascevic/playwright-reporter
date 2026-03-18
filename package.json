@@ -1,6 +1,6 @@
 {
   "name": "@sentinelqa/playwright-reporter",
-  "version": "0.1.20",
+  "version": "0.1.27",
   "private": false,
   "description": "Playwright reporter for CI debugging with optional Sentinel cloud dashboards",
   "license": "MIT",
@@ -32,13 +32,14 @@
   },
   "exports": {
     ".": "./dist/index.js",
-    "./reporter": "./dist/reporter.js"
+    "./reporter": "./dist/reporter.js",
+    "./fixtures": "./dist/fixtures.js"
   },
   "peerDependencies": {
     "@playwright/test": ">=1.40.0"
   },
   "dependencies": {
-    "@sentinelqa/uploader": "^0.1.23"
+    "@sentinelqa/uploader": "^0.1.24"
   },
   "devDependencies": {
     "@types/node": "^20.19.32",

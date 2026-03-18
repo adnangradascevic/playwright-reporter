@@ -7,6 +7,9 @@ import {
 } from "@sentinelqa/uploader/node";
 import { loadSentinelEnv } from "./env";
 import { generateLocalDebugReport } from "./localReport";
+import { buildQuickDiagnosis } from "./quickDiagnosis";
+
+const { sentinelCaptureFailureContextFromReporter } = require("@sentinelqa/uploader/playwright");
 
 type ReporterOptions = {
   project?: string | null;
@@ -68,9 +71,10 @@ class SentinelReporter {
     }
   }
 
-  onTestEnd(_test: any, result: any) {
+  async onTestEnd(test: any, result: any) {
     if (!result) return;
     if (["failed", "timedOut", "interrupted"].includes(result.status)) {
+      await sentinelCaptureFailureContextFromReporter(test, result).catch(() => null);
       this.failedCount += 1;
     }
   }
@@ -94,11 +98,21 @@ class SentinelReporter {
     console.log(bold("Open"));
     console.log(`  ${cyan(openCommand)}`);
     console.log("");
+    const quickDiagnosis = buildQuickDiagnosis(this.options.playwrightJsonPath);
+    if (quickDiagnosis?.lines.length) {
+      console.log(yellow("Quick diagnosis"));
+      for (const line of quickDiagnosis.lines) {
+        console.log(`  ${dim(line)}`);
+      }
+      console.log("");
+    }
     console.log(yellow("Tip"));
-    console.log(`  ${dim("Upload runs to Sentinel Cloud for CI history,")}`);
-    console.log(`  ${dim("shareable debugging links, and AI summaries.")}`);
-    console.log("");
-    console.log(`  ${cyan(formatTerminalLink("https://sentinelqa.com", "https://sentinelqa.com"))}`);
+    console.log(`  ${dim("Want full AI analysis, shareable run links, and CI history?")}`);
+    console.log(
+      `  ${dim("Try Sentinel Cloud Beta free:")} ${cyan(
+        formatTerminalLink("https://sentinelqa.com", "https://sentinelqa.com")
+      )}`
+    );
     console.log("");
     console.log(`  ${magenta("★ If this reporter helped you debug faster,")}`);
     console.log(`  ${dim("consider starring the project:")}`);
@@ -114,7 +128,10 @@ class SentinelReporter {
 
   async onEnd() {
     const hasSentinelToken = Boolean(process.env.SENTINEL_TOKEN);
-    if (!hasSentinelToken) {
+    const hasCiEnv = hasSupportedCiEnv(process.env);
+    const localUploadEnabled = isLocalUploadEnabled(process.env);
+
+    if (!hasSentinelToken || (!hasCiEnv && !localUploadEnabled)) {
       const localReport = generateLocalDebugReport({
         playwrightJsonPath: this.options.playwrightJsonPath,
         playwrightReportDir: this.options.playwrightReportDir,
@@ -127,30 +144,21 @@ class SentinelReporter {
 
       this.printLocalReport(localReport.htmlPath);
       console.log("");
+
+      if (hasSentinelToken && !hasCiEnv && !localUploadEnabled) {
+        console.log("Sentinel upload skipped for this local run.");
+        console.log(
+          "To upload local runs, set SENTINEL_UPLOAD_LOCAL=1 and provide the required CI metadata."
+        );
+        console.log("");
+      }
+
       return;
     }
-
-    const hasCiEnv = hasSupportedCiEnv(process.env);
-    const localUploadEnabled = isLocalUploadEnabled(process.env);
 
     console.log("");
     console.log("Uploading failure artifacts to Sentinel...");
     console.log("");
-
-    if (!hasCiEnv && !localUploadEnabled) {
-      console.log("Local upload mode detected.");
-      console.log(
-        "If this run is outside CI, set SENTINEL_UPLOAD_LOCAL=1 and provide the required CI metadata."
-      );
-      console.log("");
-      console.log("Typical local upload environment variables:");
-      console.log("• SENTINEL_UPLOAD_LOCAL=1");
-      console.log("• CI_COMMIT_SHA or GITHUB_SHA");
-      console.log("• CI_COMMIT_REF_NAME or GITHUB_REF_NAME");
-      console.log("• CI_JOB_URL or a matching run URL");
-      console.log("• CI_PIPELINE_ID or GITHUB_RUN_ID");
-      console.log("");
-    }
 
     const exitCode = await runSentinelUpload({
       playwrightJsonPath: this.options.playwrightJsonPath,
