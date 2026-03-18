@@ -139,10 +139,3 @@ Sentinel Cloud adds:
 
 Free for up to 100 CI runs per month.
 Create an account at [sentinelqa.com](https://sentinelqa.com).
-
-## Publish Checklist
-
-- Confirm `repository`, `homepage`, and `bugs` point at this repo
-- Run `npm run build`
-- Run `npm pack --dry-run`
-- Verify `dist/` is included in the published tarball
