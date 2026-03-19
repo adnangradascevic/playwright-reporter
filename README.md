@@ -17,9 +17,8 @@ Works with no account or API key required.
 
 Use it to get a shareable hosted run link from CI or local development, then upgrade to Sentinel Cloud for richer history and intelligence.
 
-![Sentinel Report Example](./docs/screenshot.png)
-![Run-to-Run Diff](./docs/run_diff.png)
-![CLI Quick Diagnosis](./docs/CLI.png)
+![Sentinel Report Example](./docs/screenshot1.png)
+![CLI Quick Diagnosis](./docs/CLI1.png)
 
 ## Features
 
