@@ -1,6 +1,6 @@
 {
   "name": "@sentinelqa/playwright-reporter",
-  "version": "0.1.38",
+  "version": "0.1.42",
   "private": false,
   "description": "Playwright reporter for CI debugging with optional Sentinel cloud dashboards",
   "license": "MIT",

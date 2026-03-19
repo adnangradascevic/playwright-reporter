@@ -63,10 +63,12 @@ class SentinelReporter {
 
   async onEnd() {
     const hasWorkspaceToken = Boolean(process.env.SENTINEL_TOKEN);
+    const hasCiEnv = hasSupportedCiEnv(process.env);
+    const localUploadEnabled = isLocalUploadEnabled(process.env);
     const usingImplicitLocalPublicMode =
       !hasWorkspaceToken &&
-      !hasSupportedCiEnv(process.env) &&
-      !isLocalUploadEnabled(process.env);
+      !hasCiEnv &&
+      !localUploadEnabled;
     const quickDiagnosis = buildQuickDiagnosis(this.options.playwrightJsonPath);
     console.log("");
     if (quickDiagnosis?.lines.length) {
@@ -75,6 +77,20 @@ class SentinelReporter {
         console.log(`  ${dim(line)}`);
       }
       console.log("");
+    }
+
+    if (hasWorkspaceToken && !hasCiEnv && !localUploadEnabled) {
+      console.log(
+        [
+          "Sentinel: Upload skipped.",
+          "Reason: Local workspace uploads require SENTINEL_UPLOAD_LOCAL=1.",
+          "",
+          "Next step:",
+          "- Set SENTINEL_UPLOAD_LOCAL=1 to allow a local workspace upload.",
+          "- Or remove SENTINEL_TOKEN to generate a free public hosted report instead."
+        ].join("\n")
+      );
+      return;
     }
 
     if (hasWorkspaceToken) {
@@ -96,7 +112,9 @@ class SentinelReporter {
       suppressSummaryJson: true,
       env: {
         SENTINEL_REPORTER_PROJECT: this.options.project || undefined,
-        SENTINEL_REPORTER_SILENT: "1"
+        SENTINEL_REPORTER_SILENT: "1",
+        SENTINEL_UPLOAD_LOCAL:
+          usingImplicitLocalPublicMode ? "1" : process.env.SENTINEL_UPLOAD_LOCAL
       }
     });
 
