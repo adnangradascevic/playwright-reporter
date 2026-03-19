@@ -29,9 +29,6 @@ export type SentinelPlaywrightOptions = {
   testResultsDir?: string;
   artifactDirs?: string[];
   verbose?: boolean;
-  localReportDir?: string;
-  localReportFileName?: string;
-  localRedirectFileName?: string;
 };
 
 const DEFAULT_REPORT_DIR = "playwright-report";
@@ -167,10 +164,7 @@ export function withSentinel(
     playwrightReportDir,
     testResultsDir,
     artifactDirs,
-    verbose: options.verbose ?? false,
-    localReportDir: options.localReportDir,
-    localReportFileName: options.localReportFileName,
-    localRedirectFileName: options.localRedirectFileName
+    verbose: options.verbose ?? false
   };
 
   const sentinelIndex = reporters.findIndex(

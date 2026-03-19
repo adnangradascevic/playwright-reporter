@@ -1,4 +1,14 @@
 declare module "@sentinelqa/uploader/node" {
+  export type SentinelUploadResult = {
+    exitCode: number;
+    runId: string | null;
+    internalRunUrl: string | null;
+    internalWorkflowUrl: string | null;
+    shareRunUrl: string | null;
+    shareFirstFailureUrl: string | null;
+    shareLabel: string | null;
+  };
+
   export function hasSupportedCiEnv(
     env?: NodeJS.ProcessEnv
   ): boolean;
@@ -14,7 +24,7 @@ declare module "@sentinelqa/uploader/node" {
     artifactDirs?: string[];
     suppressSummaryJson?: boolean;
     env?: Record<string, string | undefined>;
-  }): Promise<number>;
+  }): Promise<SentinelUploadResult>;
 }
 
 declare module "@sentinelqa/uploader/playwright" {

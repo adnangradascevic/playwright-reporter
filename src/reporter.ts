@@ -1,12 +1,7 @@
-import path from "path";
-import { pathToFileURL } from "url";
 import {
-  hasSupportedCiEnv,
-  isLocalUploadEnabled,
   runSentinelUpload
 } from "@sentinelqa/uploader/node";
 import { loadSentinelEnv } from "./env";
-import { generateLocalDebugReport } from "./localReport";
 import { buildQuickDiagnosis } from "./quickDiagnosis";
 
 const { sentinelCaptureFailureContextFromReporter } = require("@sentinelqa/uploader/playwright");
@@ -18,18 +13,6 @@ type ReporterOptions = {
   testResultsDir: string;
   artifactDirs?: string[];
   verbose?: boolean;
-  localReportDir?: string;
-  localReportFileName?: string;
-  localRedirectFileName?: string;
-};
-
-const pluralize = (count: number, singular: string, plural: string) => {
-  return count === 1 ? singular : plural;
-};
-
-const formatTerminalLink = (label: string, target: string) => {
-  if (!process.stdout.isTTY) return label;
-  return `\u001B]8;;${target}\u0007${label}\u001B]8;;\u0007`;
 };
 
 const colorize = (value: string, code: string) => {
@@ -37,12 +20,9 @@ const colorize = (value: string, code: string) => {
   return `\u001b[${code}m${value}\u001b[0m`;
 };
 
-const bold = (value: string) => colorize(value, "1");
 const green = (value: string) => colorize(value, "32");
-const cyan = (value: string) => colorize(value, "36");
 const yellow = (value: string) => colorize(value, "33");
 const dim = (value: string) => colorize(value, "2");
-const magenta = (value: string) => colorize(value, "35");
 
 class SentinelReporter {
   private failedCount = 0;
@@ -79,27 +59,10 @@ class SentinelReporter {
     }
   }
 
-  private printLocalReport(localReport: ReturnType<typeof generateLocalDebugReport>) {
-    const localReportPath = localReport.htmlPath;
-    const relativeReportPath = path
-      .relative(process.cwd(), localReportPath)
-      .replace(/\\/g, "/");
-    const displayPath = relativeReportPath.startsWith(".")
-      ? relativeReportPath
-      : `./${relativeReportPath}`;
-    const openCommand = `open ${displayPath}`;
-
-    console.log("");
-    console.log(green("✔ Artifacts collected"));
-    console.log(green("✔ Sentinel HTML debugging report created"));
-    console.log("");
-    console.log(bold("Report"));
-    console.log(`  ${cyan(formatTerminalLink(displayPath, pathToFileURL(localReportPath).href))}`);
-    console.log("");
-    console.log(bold("Open"));
-    console.log(`  ${cyan(openCommand)}`);
-    console.log("");
+  async onEnd() {
+    const hasWorkspaceToken = Boolean(process.env.SENTINEL_TOKEN);
     const quickDiagnosis = buildQuickDiagnosis(this.options.playwrightJsonPath);
+    console.log("");
     if (quickDiagnosis?.lines.length) {
       console.log(yellow("Quick diagnosis"));
       for (const line of quickDiagnosis.lines) {
@@ -107,84 +70,42 @@ class SentinelReporter {
       }
       console.log("");
     }
-    if (localReport.runDiff) {
-      console.log(yellow("Run-to-run diff"));
-      console.log(`  ${dim(`New failures: ${localReport.runDiff.newFailures.length}`)}`);
-      console.log(`  ${dim(`Fixed since last run: ${localReport.runDiff.fixedTests.length}`)}`);
-      console.log(`  ${dim(`Still failing: ${localReport.runDiff.stillFailing.length}`)}`);
+
+    if (hasWorkspaceToken) {
       console.log("");
+      console.log(green("✔ Artifacts collected"));
     }
-    console.log(yellow("Tip"));
-    console.log(`  ${dim("Want full AI analysis, shareable run links, and CI history?")}`);
-    console.log(
-      `  ${dim("Try Sentinel Cloud Beta free:")} ${cyan(
-        formatTerminalLink("https://sentinelqa.com", "https://sentinelqa.com")
-      )}`
-    );
     console.log("");
-    console.log(`  ${magenta("★ If this reporter helped you debug faster,")}`);
-    console.log(`  ${dim("consider starring the project:")}`);
-    console.log(
-      `  ${cyan(
-        formatTerminalLink(
-          "https://github.com/adnangradascevic/playwright-reporter",
-          "https://github.com/adnangradascevic/playwright-reporter"
-        )
-      )}`
-    );
-  }
-
-  async onEnd() {
-    const hasSentinelToken = Boolean(process.env.SENTINEL_TOKEN);
-    const hasCiEnv = hasSupportedCiEnv(process.env);
-    const localUploadEnabled = isLocalUploadEnabled(process.env);
-
-    if (!hasSentinelToken || (!hasCiEnv && !localUploadEnabled)) {
-      const localReport = generateLocalDebugReport({
-        playwrightJsonPath: this.options.playwrightJsonPath,
-        playwrightReportDir: this.options.playwrightReportDir,
-        testResultsDir: this.options.testResultsDir,
-        artifactDirs: this.options.artifactDirs || [],
-        reportDir: this.options.localReportDir,
-        reportFileName: this.options.localReportFileName,
-        redirectFileName: this.options.localRedirectFileName
-      });
-
-      this.printLocalReport(localReport);
-      console.log("");
-
-      if (hasSentinelToken && !hasCiEnv && !localUploadEnabled) {
-        console.log("Sentinel upload skipped for this local run.");
-        console.log(
-          "To upload local runs, set SENTINEL_UPLOAD_LOCAL=1 and provide the required CI metadata."
-        );
-        console.log("");
-      }
-
-      return;
-    }
-
-    console.log("");
-    console.log("Uploading failure artifacts to Sentinel...");
+    console.log("Uploading hosted debugging report to Sentinel...");
     console.log("");
 
-    const exitCode = await runSentinelUpload({
+    const upload = await runSentinelUpload({
       playwrightJsonPath: this.options.playwrightJsonPath,
       playwrightReportDir: this.options.playwrightReportDir,
       testResultsDir: this.options.testResultsDir,
       artifactDirs: this.options.artifactDirs || [],
       suppressSummaryJson: true,
       env: {
-        SENTINEL_REPORTER_PROJECT: this.options.project || undefined
+        SENTINEL_REPORTER_PROJECT: this.options.project || undefined,
+        SENTINEL_REPORTER_SILENT: "1"
       }
     });
 
-    if (exitCode !== 0) {
-      throw new Error(`Sentinel upload failed with exit code ${exitCode}`);
+    if (upload.exitCode !== 0) {
+      throw new Error(`Sentinel upload failed with exit code ${upload.exitCode}`);
     }
 
     console.log("");
-    console.log("✔ Uploaded run to Sentinel");
+    console.log("Sentinel report");
+    console.log(`  ${upload.shareRunUrl || upload.internalRunUrl}`);
+    if (upload.shareLabel) {
+      console.log(`  ${dim(upload.shareLabel)}`);
+    }
+    if (!hasWorkspaceToken) {
+      console.log("");
+      console.log("Upgrade for free to get full AI debugging suggestions");
+      console.log(`  ${dim("https://app.sentinelqa.com/register")}`);
+    }
   }
 }
 
