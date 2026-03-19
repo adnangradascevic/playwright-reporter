@@ -1,4 +1,6 @@
 import {
+  hasSupportedCiEnv,
+  isLocalUploadEnabled,
   runSentinelUpload
 } from "@sentinelqa/uploader/node";
 import { loadSentinelEnv } from "./env";
@@ -61,6 +63,10 @@ class SentinelReporter {
 
   async onEnd() {
     const hasWorkspaceToken = Boolean(process.env.SENTINEL_TOKEN);
+    const usingImplicitLocalPublicMode =
+      !hasWorkspaceToken &&
+      !hasSupportedCiEnv(process.env) &&
+      !isLocalUploadEnabled(process.env);
     const quickDiagnosis = buildQuickDiagnosis(this.options.playwrightJsonPath);
     console.log("");
     if (quickDiagnosis?.lines.length) {
@@ -77,6 +83,9 @@ class SentinelReporter {
     }
     console.log("");
     console.log("Uploading hosted debugging report to Sentinel...");
+    if (usingImplicitLocalPublicMode) {
+      console.log(dim("Local upload env not set. Falling back to local metadata for a public hosted report."));
+    }
     console.log("");
 
     const upload = await runSentinelUpload({
