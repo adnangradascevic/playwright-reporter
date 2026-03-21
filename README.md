@@ -2,7 +2,7 @@
 
 After every failed run, reporter prints a shareable debugging link:
 
-Sample run: https://app.sentinelqa.com/share/run/9iT2dC8sLRhuaQ2rU_pn81m_y6BTPSetjOgEL0KKLhE
+Sample run: https://app.sentinelqa.com/share/1f343d91-be17-4c14-b1b9-2d4e8ef448d2
 
 Open it to inspect failures instantly or share it in Slack, PRs, or GitHub issues.
 
