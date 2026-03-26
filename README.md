@@ -40,6 +40,46 @@ Debugging Playwright failures usually means downloading traces, screenshots, and
 
 Reporter uploads those artifacts into a single hosted Sentinel run page so you can open one link, inspect failures fast, and share that link with the rest of the team.
 
+## CLI diagnosis
+
+Sentinel is not just a report link.
+
+On failed runs, it prints a compact terminal diagnosis that answers:
+
+1. what broke
+2. why it broke
+3. where to look
+4. what changed
+5. what to do next
+
+The goal is simple:
+
+you should not need to open logs first.
+
+Typical CLI output:
+
+```text
+Sentinel diagnosis
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NEW FAILURE after 8 passing runs
+
+What broke: 10 tests failed
+Why: collapsed into 2 real issues
+
+Issue 1: UI assertion mismatch (6 tests)
+  Why: getByTestId('metric-pass-rate') showed "82%" instead of "88%"
+  Where: app.spec.ts:43, app.spec.ts:69
+  Expected: 88%
+  Received: 82%
+  What changed: "update analytics cards"
+  Next: verify getByTestId('metric-pass-rate')
+  Impact: 6 tests failing with same root cause
+  Clears: fixing this likely clears 6 of 10 failures
+```
+
+On passed runs, Sentinel stays short and only prints a warning if there is a strong risk signal worth caring about.
+
 ## Why teams use the free version
 
 - Drop one wrapper into `playwright.config.ts` and keep running `npx playwright test`

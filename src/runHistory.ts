@@ -16,6 +16,22 @@ type RunSnapshot = {
   failures: SnapshotFailure[];
 };
 
+type ReporterHistoryTest = {
+  matchKey: string;
+  title: string;
+  status: string;
+};
+
+type ReporterHistorySnapshot = {
+  generatedAt: string;
+  branch: string;
+  gitSha: string;
+  failedCount: number;
+  passedCount: number;
+  totalTests: number;
+  tests: ReporterHistoryTest[];
+};
+
 type LegacyRunSnapshot = Partial<RunSnapshot> & {
   path?: string;
   tests?: Array<{
@@ -32,7 +48,23 @@ type RunDiffSummary = {
   stillFailing: number;
 };
 
+export type FailedRunHistorySummary = {
+  lines: string[];
+  passStreakBeforeFailure: number;
+  previousWasGreen: boolean;
+  newFailures: number;
+  fixedTests: number;
+  stillFailing: number;
+  recurringCount: number;
+  recurringTitle: string | null;
+};
+
+type HistoryContext = {
+  comparedRunScope: "previous_attempt" | "last_failed_run";
+};
+
 const SENTINEL_HISTORY_DIR = path.join(".sentinel", "history");
+const REPORTER_HISTORY_DIR = path.join(".sentinel", "reporter-history");
 
 const ensureDir = (dirPath: string) => {
   if (!fs.existsSync(dirPath)) {
@@ -116,6 +148,15 @@ const normalizeFailures = (snapshot: LegacyRunSnapshot | null): SnapshotFailure[
   return [];
 };
 
+const readJson = <T>(filePath: string): T | null => {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
+  } catch {
+    return null;
+  }
+};
+
 const readSnapshot = (filePath: string) => {
   if (!fs.existsSync(filePath)) return null;
   try {
@@ -123,6 +164,57 @@ const readSnapshot = (filePath: string) => {
   } catch {
     return null;
   }
+};
+
+const listSnapshots = (branch: string) => {
+  const historyDir = path.resolve(process.cwd(), SENTINEL_HISTORY_DIR);
+  if (!fs.existsSync(historyDir)) return [] as RunSnapshot[];
+  return fs
+    .readdirSync(historyDir)
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => readSnapshot(path.join(historyDir, file)))
+    .filter((value): value is LegacyRunSnapshot => Boolean(value))
+    .map((snapshot) => ({
+      generatedAt: typeof snapshot.generatedAt === "string" ? snapshot.generatedAt : new Date(0).toISOString(),
+      branch: typeof snapshot.branch === "string" ? snapshot.branch : branch,
+      gitSha: typeof snapshot.gitSha === "string" ? snapshot.gitSha : "unknown",
+      failures: normalizeFailures(snapshot)
+    }))
+    .filter((snapshot) => snapshot.branch === branch)
+    .sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
+};
+
+
+const isMeaningfulReporterSnapshot = (snapshot: ReporterHistorySnapshot | null | undefined) => {
+  if (!snapshot) return false;
+  if (snapshot.totalTests <= 0) return false;
+  if ((snapshot.passedCount || 0) === 0 && (snapshot.failedCount || 0) === 0) return false;
+  return true;
+};
+
+const listReporterSnapshots = (branch: string) => {
+  const historyDir = path.resolve(process.cwd(), REPORTER_HISTORY_DIR);
+  if (!fs.existsSync(historyDir)) return [] as ReporterHistorySnapshot[];
+  return fs
+    .readdirSync(historyDir)
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => readJson<ReporterHistorySnapshot>(path.join(historyDir, file)))
+    .filter((value): value is ReporterHistorySnapshot => Boolean(value))
+    .filter((snapshot) => snapshot.branch === branch)
+    .filter((snapshot) => isMeaningfulReporterSnapshot(snapshot))
+    .sort((a, b) => b.generatedAt.localeCompare(a.generatedAt));
+};
+
+const normalizeReporterFailures = (snapshot: ReporterHistorySnapshot | null | undefined): SnapshotFailure[] => {
+  if (!snapshot) return [];
+  return (snapshot.tests || [])
+    .filter((test) => test && test.status === "failed")
+    .map((test) => ({
+      id: typeof test.title === "string" ? test.title : test.matchKey,
+      matchKey: typeof test.matchKey === "string" ? test.matchKey : (typeof test.title === "string" ? test.title : "unknown"),
+      title: typeof test.title === "string" ? test.title : test.matchKey,
+      status: "failed"
+    }));
 };
 
 const writeSnapshot = (snapshot: RunSnapshot) => {
@@ -140,6 +232,9 @@ const writeSnapshot = (snapshot: RunSnapshot) => {
   }
 };
 
+const matchesFailure = (left: SnapshotFailure, right: SnapshotFailure) =>
+  left.id === right.id || left.matchKey === right.matchKey;
+
 export const buildRunDiffSummary = (playwrightJsonPath: string): RunDiffSummary | null => {
   const snapshot = buildSnapshot(playwrightJsonPath);
   const previous =
@@ -154,24 +249,87 @@ export const buildRunDiffSummary = (playwrightJsonPath: string): RunDiffSummary 
     previous && previous.generatedAt !== snapshot.generatedAt
       ? {
           newFailures: snapshot.failures.filter(
-            (test) =>
-              !previousFailures.some(
-                (prev) => prev.id === test.id || prev.matchKey === test.matchKey
-              )
+            (test) => !previousFailures.some((prev) => matchesFailure(prev, test))
           ).length,
           fixedTests: previousFailures.filter(
-            (test) =>
-              !currentFailureIds.has(test.id) && !currentFailureMatchKeys.has(test.matchKey)
+            (test) => !currentFailureIds.has(test.id) && !currentFailureMatchKeys.has(test.matchKey)
           ).length,
           stillFailing: snapshot.failures.filter(
-            (test) =>
-              previousFailures.some(
-                (prev) => prev.id === test.id || prev.matchKey === test.matchKey
-              )
+            (test) => previousFailures.some((prev) => matchesFailure(prev, test))
           ).length
         }
       : null;
 
   writeSnapshot(snapshot);
   return diff;
+};
+
+export const buildFailedRunHistorySummary = (playwrightJsonPath: string): FailedRunHistorySummary | null => {
+  const snapshot = buildSnapshot(playwrightJsonPath);
+  if (snapshot.failures.length === 0) return null;
+
+  const reporterSnapshots = listReporterSnapshots(snapshot.branch);
+  const previousRun = reporterSnapshots[0] || null;
+  const previousFailures = normalizeReporterFailures(previousRun);
+
+  let passStreakBeforeFailure = 0;
+  for (const previous of reporterSnapshots) {
+    if ((previous.failedCount || 0) === 0) {
+      passStreakBeforeFailure += 1;
+      continue;
+    }
+    break;
+  }
+
+  const newFailures = snapshot.failures.filter(
+    (failure) => !previousFailures.some((prev) => matchesFailure(prev, failure))
+  ).length;
+  const fixedTests = previousFailures.filter(
+    (failure) => !snapshot.failures.some((current) => matchesFailure(current, failure))
+  ).length;
+  const stillFailing = snapshot.failures.filter(
+    (failure) => previousFailures.some((prev) => matchesFailure(prev, failure))
+  ).length;
+
+  const failingReporterRuns = reporterSnapshots.filter((run) => (run.failedCount || 0) > 0);
+  const recurringFailures = snapshot.failures
+    .map((failure) => ({
+      failure,
+      occurrences: failingReporterRuns.filter((run) => normalizeReporterFailures(run).some((prev) => matchesFailure(prev, failure))).length
+    }))
+    .sort((a, b) => b.occurrences - a.occurrences);
+
+  const topRecurring = recurringFailures.find((item) => item.occurrences > 0) || null;
+
+  writeSnapshot(snapshot);
+
+  const lines: string[] = [];
+  if (passStreakBeforeFailure > 0) {
+    lines.push(`- First failure after ${passStreakBeforeFailure} passing runs`);
+  }
+  if (previousRun && (newFailures > 0 || fixedTests > 0 || stillFailing > 0)) {
+    const previousWasGreen = (previousRun.failedCount || 0) === 0;
+    if (previousWasGreen) {
+      lines.push(`- The immediately previous run was green. Compared to that previous run: ${newFailures} newly failing in this run, ${stillFailing} still failing, ${fixedTests} no longer failing`);
+    } else {
+      lines.push(`- Compared to the immediately previous run: ${newFailures} newly failing in this run, ${stillFailing} still failing, ${fixedTests} no longer failing`);
+    }
+  }
+  if (topRecurring) {
+    lines.push(`- Recurring across ${topRecurring.occurrences + 1} recorded failed runs in local history (${topRecurring.failure.title})`);
+  }
+
+
+  return lines.length
+    ? {
+        lines,
+        passStreakBeforeFailure,
+        previousWasGreen: Boolean(previousRun && (previousRun.failedCount || 0) === 0),
+        newFailures,
+        fixedTests,
+        stillFailing,
+        recurringCount: topRecurring ? topRecurring.occurrences : 0,
+        recurringTitle: topRecurring?.failure.title || null
+      }
+    : null;
 };

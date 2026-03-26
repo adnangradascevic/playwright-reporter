@@ -212,20 +212,27 @@ const safeSlug = (value: string) => {
   );
 };
 
+const cleanTitleParts = (parts: string[]) => {
+  const normalized = parts.map((part) => String(part || "").trim()).filter(Boolean);
+  const withoutUnnamed = normalized.filter((part) => part !== "Unnamed test");
+  return withoutUnnamed.length ? withoutUnnamed : normalized;
+};
+
 const buildTitlePath = (baseTitles: string[], test: any) => {
   const title = typeof test?.title === "string" ? test.title : null;
-  if (!title) return baseTitles.filter(Boolean);
-  if (baseTitles[baseTitles.length - 1] === title) return baseTitles.filter(Boolean);
-  return [...baseTitles, title].filter(Boolean);
+  const next = !title || baseTitles[baseTitles.length - 1] === title
+    ? baseTitles.filter(Boolean)
+    : [...baseTitles, title].filter(Boolean);
+  return cleanTitleParts(next);
 };
 
 const buildTestIdentity = (test: any, titlePath: string[]) => {
   const file = test?.location?.file || "unknown";
   const project = test?.projectName || "default";
-  const joined = titlePath.join(" > ");
+  const joined = cleanTitleParts(titlePath).join(" > ");
   return {
     id: [file, project, joined].join("::"),
-    matchKey: [file, joined].join("::")
+    matchKey: [file, project, joined].join("::")
   };
 };
 
@@ -345,6 +352,17 @@ const resolveExistingFile = (candidate: string | null | undefined, baseDirs: str
   return null;
 };
 
+const readAttachmentJson = <T>(attachments: any[], name: string, baseDirs: string[]) => {
+  const attachment = attachments.find((item) => item?.name === name && item?.path);
+  const resolved = resolveExistingFile(attachment?.path, baseDirs);
+  if (!resolved) return null;
+  try {
+    return JSON.parse(fs.readFileSync(resolved, "utf8")) as T;
+  } catch {
+    return null;
+  }
+};
+
 const copyArtifact = (
   sourcePath: string,
   kind: ArtifactKind,
@@ -385,6 +403,8 @@ const copyArtifact = (
 const createReportTest = (test: any, titlePath: string[]) => {
   const results = Array.isArray(test?.results) ? test.results : [];
   const lastResult = results.length > 0 ? results[results.length - 1] : null;
+  const attachments = Array.isArray(lastResult?.attachments) ? lastResult.attachments : [];
+  const baseDirs = [process.cwd(), path.resolve(process.cwd(), "test-results")];
   const errors = results.flatMap((result: any) =>
     Array.isArray(result?.errors)
       ? result.errors
@@ -403,8 +423,8 @@ const createReportTest = (test: any, titlePath: string[]) => {
   return {
     id: identity.id,
     matchKey: identity.matchKey,
-    title: test?.title || titlePath[titlePath.length - 1] || "Untitled test",
-    titlePath,
+    title: cleanTitleParts(titlePath).slice(-1)[0] || test?.title || titlePath[titlePath.length - 1] || "Untitled test",
+    titlePath: cleanTitleParts(titlePath),
     file: test?.location?.file || null,
     projectName: test?.projectName || null,
     status,
@@ -413,10 +433,17 @@ const createReportTest = (test: any, titlePath: string[]) => {
     diagnosis:
       ["failed", "timedOut", "interrupted"].includes(status) && primaryError
         ? parseFailureFacts(
-            test?.title || titlePath[titlePath.length - 1] || "Untitled test",
-            titlePath,
+            cleanTitleParts(titlePath).slice(-1)[0] || test?.title || titlePath[titlePath.length - 1] || "Untitled test",
+            cleanTitleParts(titlePath),
             primaryError,
-            status
+            status,
+            test?.location?.file || null,
+            {
+              projectName: test?.projectName || null,
+              timeoutBudgetMs: typeof test?.timeout === "number" ? test.timeout : null,
+              codeContext: readAttachmentJson(attachments, "sentinel-code-context", baseDirs),
+              domCapture: readAttachmentJson(attachments, "sentinel-dom-capture", baseDirs)
+            }
           )
         : null,
     artifacts: []
@@ -545,7 +572,7 @@ const buildRunSnapshot = (tests: ReportTest[], summary: LocalReportSummary): Run
   tests: tests.map((test) => ({
     id: test.id,
     matchKey: test.matchKey,
-    title: test.titlePath.join(" > ") || test.title,
+    title: cleanTitleParts(test.titlePath).join(" > ") || test.title,
     status: test.status,
     signal: test.diagnosis?.signal || null,
     locator: test.diagnosis?.locator || null,
